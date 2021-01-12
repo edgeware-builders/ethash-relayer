@@ -1,0 +1,21 @@
+[package]
+name = "ethash-relyer"
+version = "0.1.0"
+authors = ["Shady Khalifa <shekohex@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+ethash = { git = "https://github.com/edgeware-builders/ethash", branch = "rust-proof" }
+hyper = { version = "0.14", features = ["http1", "http2", "server", "stream", "runtime"] }
+tracing = { version = "0.1", default-features = false, features = ["std", "log"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+rlp = { version = "0.4", default-features = false }
+hex = { version = "0.4", default-features = false }
+byteorder = { version = "1", default-features = false }
+tokio = { version = "1.0", default-features = false, features = ["macros"] }
+
+anyhow = "1"
+serde_json = "1"
+parking_lot = "0.11"
+tracing-subscriber = "0.2"
+
