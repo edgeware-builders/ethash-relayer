@@ -69,7 +69,7 @@ type ServerState = Arc<RwLock<State>>;
 impl Default for State {
     fn default() -> Self {
         Self {
-            proof_service: ProofGeneratorService::new(DagGeneratorService::new(0)),
+            proof_service: ProofGeneratorService::default(),
             current_state: CurrentState::Idle,
         }
     }
@@ -126,12 +126,8 @@ async fn generate_proofs(req: Request<Body>, state: ServerState) -> Result<Respo
         // clone the state to sent to the other task.
         let state = state.clone();
         std::thread::spawn(move || {
-            let mut dag_service = service::DagGeneratorService::new(epoch.as_usize());
-            // warm up
-            // try to reload the dag from the disk;
-            let _ = dag_service.reload().is_ok();
-            let mut proof_service = ProofGeneratorService::new(dag_service);
-            proof_service.build_merkle_tree();
+            let dag_service = service::DagGeneratorService::new(epoch.as_usize());
+            let proof_service = ProofGeneratorService::with_service(dag_service);
             let mut s = state.write();
             s.proof_service = proof_service;
             // now set that we are Idle, waiting for the next http request.

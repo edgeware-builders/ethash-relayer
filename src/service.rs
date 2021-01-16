@@ -2,10 +2,10 @@ use std::io;
 use std::path::PathBuf;
 
 use byteorder::ByteOrder;
-use ethash::mtree::MerkleTree;
 use ethash::types::*;
 use ethash::{EthereumPatch, LightDAG, Patch};
 use log::{debug, info, warn};
+use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 
 /// Generates DAG (Cache, Dataset).
@@ -88,38 +88,55 @@ impl DagGeneratorService {
 }
 
 /// Generates Proof for a given Block header.
+#[self_referencing]
 #[derive(Debug, PartialEq)]
 pub struct ProofGeneratorService {
     dag_service: DagGeneratorService,
-    loaded: bool,
-    mt: ethash::mtree::MerkleTree,
+    depth: usize,
+    leaves: Vec<ethash::mtree::DobuleLeaf>,
+    #[borrows(leaves)]
+    mt: ethash::mtree::MerkleTree<'this>,
 }
 
 impl Eq for ProofGeneratorService {}
 
+impl Default for ProofGeneratorService {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl ProofGeneratorService {
-    pub fn new(dag_service: DagGeneratorService) -> Self {
-        Self {
-            dag_service,
-            loaded: false,
-            mt: MerkleTree::Zero(0),
+    pub fn empty() -> Self {
+        ProofGeneratorServiceBuilder {
+            dag_service: DagGeneratorService::default(),
+            depth: 0,
+            leaves: Vec::new(),
+            mt_builder: |_| ethash::mtree::MerkleTree::Zero(0),
         }
+        .build()
+    }
+    pub fn with_service(mut dag_service: DagGeneratorService) -> Self {
+        let _ = dag_service.reload().is_ok();
+        let epoch = dag_service.epoch();
+        let dataset = dag_service.dataset();
+        let (depth, leaves) = ethash::calc_dataset_merkle_leaves(epoch, dataset);
+        debug!("Merkle leaves is ready for epoch: #{}", epoch);
+        dag_service.unload_dataset();
+        ProofGeneratorServiceBuilder {
+            dag_service,
+            depth,
+            leaves,
+            mt_builder: |leaves| {
+                let dl: Vec<_> = leaves.iter().collect();
+                ethash::mtree::MerkleTree::create(&dl, depth)
+            },
+        }
+        .build()
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.loaded
-    }
-
-    pub fn build_merkle_tree(&mut self) {
-        let epoch = self.dag_service.epoch();
-        let dataset = self.dag_service.dataset();
-        let depth = ethash::calc_dataset_depth(epoch);
-        debug!("Building up the MerkleTree with depth = {}.", depth);
-        let mt = ethash::calc_dataset_merkle_proofs(epoch, dataset);
-        self.dag_service.unload_dataset();
-        self.mt = mt;
-        self.loaded = true;
-        debug!("MerkleTree is ready for epoch: #{}", epoch);
+        !self.borrow_leaves().is_empty()
     }
 
     pub fn proofs(&mut self, header: BlockHeader) -> BlockWithProofs {
@@ -127,7 +144,7 @@ impl ProofGeneratorService {
         let hash = ethash::seal_header(&BlockHeaderSeal::from(header.clone()));
         let epoch = (header.number / EthereumPatch::epoch_length()).as_usize();
         let full_size = ethash::get_full_size(epoch);
-        let cache = self.dag_service.cache();
+        let cache = self.with_dag_service_mut(|s| s.cache());
         debug!("Calculating indices for #{} ..", header.number);
         let indices = ethash::get_indices(hash, header.nonce, full_size, |i| {
             let raw_data = ethash::calc_dataset_item(cache, i);
@@ -137,28 +154,31 @@ impl ProofGeneratorService {
             }
             data
         });
-        let merkle_root = self.mt.hash();
-        let depth = ethash::calc_dataset_depth(epoch);
-        let mut output = BlockWithProofs {
-            number: header.number.as_u64(),
-            proof_length: depth as _,
-            merkle_root: hex::encode(merkle_root.0),
-            elements: Vec::with_capacity(depth * 4),
-            merkle_proofs: Vec::with_capacity(depth * 2),
-        };
-        debug!(
-            "Final Step generating proofs for {} indices ..",
-            indices.len()
-        );
-        for index in &indices {
-            let (element, _, proofs) = self.mt.generate_proof(*index as _, depth);
-            let els = element.into_h256_array();
-            let els = els.iter().map(|v| hex::encode(&v.0));
-            output.elements.extend(els);
-            let proofs = proofs.iter().map(|v| hex::encode(&v.0));
-            output.merkle_proofs.extend(proofs);
-        }
-        output
+
+        self.with_mt(|mt| {
+            let merkle_root = mt.hash();
+            let depth = ethash::calc_dataset_depth(epoch);
+            let mut output = BlockWithProofs {
+                number: header.number.as_u64(),
+                proof_length: depth as _,
+                merkle_root: hex::encode(merkle_root.0),
+                elements: Vec::with_capacity(depth * 4),
+                merkle_proofs: Vec::with_capacity(depth * 2),
+            };
+            debug!(
+                "Final Step generating proofs for {} indices ..",
+                indices.len()
+            );
+            for index in &indices {
+                let (element, _, proofs) = mt.generate_proof(*index as _, depth);
+                let els = element.into_h256_array();
+                let els = els.iter().map(|v| hex::encode(&v.0));
+                output.elements.extend(els);
+                let proofs = proofs.iter().map(|v| hex::encode(&v.0));
+                output.merkle_proofs.extend(proofs);
+            }
+            output
+        })
     }
 }
 
@@ -180,8 +200,7 @@ mod tests {
         let _ = env_logger::builder().is_test(true).try_init();
         let mut dag_service = DagGeneratorService::default();
         let _ = dag_service.reload().is_ok();
-        let mut proof_service = ProofGeneratorService::new(dag_service);
-        proof_service.build_merkle_tree();
+        let mut proof_service = ProofGeneratorService::with_service(dag_service);
         let block_2_raw = hex::decode("f90218a088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794dd2f1e6e498202e86d8f5442af596580a4f03c2ca04943d941637411107494da9ec8bc04359d731bfd08b72b4d0edcbd4cd2ecb341a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff00100002821388808455ba4241a0476574682f76312e302e302d30636463373634372f6c696e75782f676f312e34a02f0790c5aa31ab94195e1f6443d645af5b75c46c04fbf9911711198a0ce8fdda88b853fa261a86aa9e").unwrap();
         let block_2: BlockHeader = rlp::decode(&block_2_raw).unwrap();
         let output = proof_service.proofs(block_2);
