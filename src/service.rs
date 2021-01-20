@@ -2,8 +2,7 @@ use std::io;
 use std::path::PathBuf;
 
 use byteorder::ByteOrder;
-use ethash::types::*;
-use ethash::{EthereumPatch, LightDAG, Patch};
+use ethash::{types::BlockHeader, EthereumPatch, Patch};
 use log::{debug, info, warn};
 use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
@@ -34,9 +33,9 @@ impl DagGeneratorService {
     pub fn reload(&mut self) -> io::Result<()> {
         debug!("Reloading Dag Storage..");
         let dataset = std::fs::read(format!("data/{}/dataset.bin", self.epoch))?;
+        self.dataset = dataset;
         let cache = std::fs::read(format!("data/{}/cache.bin", self.epoch))?;
         self.cache = cache;
-        self.dataset = dataset;
         Ok(())
     }
 
@@ -48,13 +47,16 @@ impl DagGeneratorService {
         if self.cache.is_empty() {
             warn!("DAG Cache is not found for epoch: {}", self.epoch);
             debug!("Start Generating DAG Cache for epoch: {}", self.epoch);
-            let dag = LightDAG::<EthereumPatch>::new(self.epoch.into());
+            let cache_size = ethash::get_cache_size(self.epoch);
+            let seed = ethash::get_seedhash(self.epoch);
+            let mut cache = vec![0u8; cache_size];
+            ethash::make_cache(&mut cache, seed);
             let cache_path = PathBuf::from(format!("data/{}/cache.bin", self.epoch));
             std::fs::create_dir_all(cache_path.parent().unwrap())
                 .expect("failed to create cache path");
-            std::fs::write(cache_path, &dag.cache).expect("failed to write cache to disk");
+            std::fs::write(cache_path, &cache).expect("failed to write cache to disk");
             info!("DAG Cache is ready for epoch: {}", self.epoch);
-            self.cache = dag.cache;
+            self.cache = cache;
             self.cache.as_slice()
         } else {
             self.cache.as_slice()
@@ -141,12 +143,20 @@ impl ProofGeneratorService {
 
     pub fn proofs(&mut self, header: BlockHeader) -> BlockWithProofs {
         debug!("Start calculating the proofs for block #{}", header.number);
-        let hash = ethash::seal_header(&BlockHeaderSeal::from(header.clone()));
         let epoch = (header.number / EthereumPatch::epoch_length()).as_usize();
         let full_size = ethash::get_full_size(epoch);
         let cache = self.with_dag_service_mut(|s| s.cache());
+        debug!("Check if the block header is correct ...");
+        let (mix_hash, _) =
+            ethash::hashimoto_light(header.seal_hash(), header.nonce, full_size, cache);
+        if dbg!(mix_hash != header.mix_hash) {
+            warn!("mix_hash mismatch for block #{}", header.number);
+        }
+
+        assert_eq!(mix_hash, header.mix_hash, "mix_hash mismatch!!");
+
         debug!("Calculating indices for #{} ..", header.number);
-        let indices = ethash::get_indices(hash, header.nonce, full_size, |i| {
+        let indices = ethash::get_indices(header.seal_hash(), header.nonce, full_size, |i| {
             let raw_data = ethash::calc_dataset_item(cache, i);
             let mut data = [0u32; 16];
             for (i, b) in data.iter_mut().enumerate() {
@@ -205,5 +215,18 @@ mod tests {
         let block_2: BlockHeader = rlp::decode(&block_2_raw).unwrap();
         let output = proof_service.proofs(block_2);
         assert_eq!(output.merkle_root, "f346b91a0469b7960a7b00d7812a5023");
+    }
+
+    #[test]
+    fn block_10234011() {
+        let block_raw = hex::decode("f90211a0c4c9a81c4ae18cfe758ccdb77e1a20f80c26e219aab3e51e3392037396f16c78a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347945a0b54d5dc17e0aadc383d2db43b0a0d3e029c4ca06831f40243a7b4ff98c6d1184aa6a0525ac710cdc46a33b868c0ed22d93ac219a032dc621f119727aebe4cc93bb54cf8bb8e38ddba99ffc85a301c87d16c1c7d6ca0e9c7998a4c7c955c56e73b056e184ca0d9ee358fe0349a8e86c7273c7014b0bfb901002a2205005240300012802101812110130418900001c0244b20537081280b6104047690410a4851442c01071c1021c54f034002000904a00032203908900d24c22a931948141c1012cd00501e2000012400022420214011a476210285c8503040c128800d4810700001005a20000890e438410026000544c130300ed00120282002104c118100e020045d421a062910075008414901448c084b002053201033060740200a584020e880ae08c18008883d601f545414004aa08004041aa84042a00ab82022664316c8260007a45110183624441c87c00c20115c743252382225100100250d02c47817a02408b004d026c4a460008400014042aa4208c001b24e2a87084e4f6c2a06f5839c289b8397532983974a2f845ee00166906574682d70726f2d687a682d74303032a0c65d22c9e5f5e5c801d97e120b8932f7a20387cb0426685afb49ead05b6565af8806d148e4044432ec").unwrap();
+        let block: BlockHeader = rlp::decode(&block_raw).unwrap();
+        dbg!(&block);
+        let epoch = block.number / EthereumPatch::epoch_length();
+        let _ = env_logger::builder().is_test(true).try_init();
+        let mut dag_service = DagGeneratorService::new(epoch.as_usize());
+        let _ = dag_service.reload().is_ok();
+        let mut proof_service = ProofGeneratorService::with_service(dag_service);
+        let _ = proof_service.proofs(block);
     }
 }

@@ -1,8 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ethash::types::BlockHeader;
-use ethash::{EthereumPatch, Patch};
+use ethash::{types::BlockHeader, EthereumPatch, Patch};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Error, Request, Response, Server};
 use parking_lot::RwLock;
@@ -103,6 +102,8 @@ async fn generate_proofs(req: Request<Body>, state: ServerState) -> Result<Respo
         Ok(header) => header,
         Err(_) => return Ok(Response::builder().status(400).body(Body::empty()).unwrap()),
     };
+
+    log::debug!(">> {:#?}", header);
 
     // at this point we have an input to work with.
     // calculate the epoch from the block number.

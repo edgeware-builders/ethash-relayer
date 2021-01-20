@@ -204,7 +204,7 @@ dependencies = [
 [[package]]
 name = "ethash"
 version = "0.4.1"
-source = "git+https://github.com/edgeware-builders/ethash?branch=rust-proof#5715f42342e10185c6d3d674f021e1aa050bf168"
+source = "git+https://github.com/edgeware-builders/ethash?branch=rust-proof#001c98cc1983613f9aaf2d7c58672d49c602252e"
 dependencies = [
  "byteorder",
  "ethereum-types",
@@ -213,7 +213,6 @@ dependencies = [
  "parking_lot",
  "rayon",
  "rlp",
- "rlp-derive",
  "sha2",
  "sha3",
  "tiny-keccak",
@@ -227,6 +226,7 @@ dependencies = [
  "byteorder",
  "env_logger",
  "ethash",
+ "ethereum-types",
  "hex",
  "hyper",
  "log",
@@ -235,6 +235,7 @@ dependencies = [
  "rlp",
  "serde",
  "serde_json",
+ "tiny-keccak",
  "tokio",
 ]
 
@@ -782,17 +783,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1190dcc8c3a512f1eef5d09bb8c84c7f39e1054e174d1795482e18f5272f2e73"
 dependencies = [
  "rustc-hex",
-]
-
-[[package]]
-name = "rlp-derive"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e33d7b2abe0c340d8797fe2907d3f20d3b5ea5908683618bfe80df7f621f672a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
